@@ -1,0 +1,89 @@
+From 2301fa4c91f57f6faf842549c134981a942295cb Mon Sep 17 00:00:00 2001
+From: mE <metaescape@foxmail.com>
+Date: Sat, 10 Sep 2022 22:53:07 +0800
+Subject: [PATCH] for py3
+
+---
+ GodTian_Pinyin.py | 12 ++++++------
+ PinyinTrie.py     |  4 ++--
+ gui.py            |  2 +-
+ 3 files changed, 9 insertions(+), 9 deletions(-)
+
+diff --git a/GodTian_Pinyin.py b/GodTian_Pinyin.py
+index 85b8912..3e983f1 100644
+--- a/GodTian_Pinyin.py
++++ b/GodTian_Pinyin.py
+@@ -7,7 +7,7 @@ Date: 2016-11-13
+ Author: QIU HU
+ """
+ 
+-import cPickle as pickle
++import pickle
+ from Priotityset import PrioritySet
+ import SplitPinyin as sp
+ import re
+@@ -62,7 +62,7 @@ def serch_in_dict(pyl,dict):
+     res += "  "
+     if res in dict:
+         list =  PrioritySet(15)
+-        s = sorted(dict[res].iteritems(), key=lambda d: d[1], reverse=True)
++        s = sorted(dict[res].items(), key=lambda d: d[1], reverse=True)
+         mm = 0
+         for j in s:
+             list1 = []
+@@ -127,8 +127,8 @@ class GodTian_Pinyin(object):
+ 
+         for t in range(START, pylislen):
+             cur_obs = pylist[t]
+-            print "---------------"
+-            print pylist,t,pylist[t]
++            print("---------------")
++            print(pylist,t,pylist[t])
+             idx = t % 2
+             V[idx] = {}
+             prev_states = cur_cand_states
+@@ -250,13 +250,13 @@ class GodTian_Pinyin(object):
+             return best_viterbi_ans, two_part
+         elif may_parts:
+             new_viterbi_ans = serch_in_dict(pyl,self.dict)
+-            print new_viterbi_ans
++            print(new_viterbi_ans)
+             if new_viterbi_ans ==[]:
+                new_viterbi_ans = self.newviterbi(pyl, topv)
+             return new_viterbi_ans,two_part
+         else:
+             viterbi_ans = self.viterbi(pyl, topv, [])
+-            print viterbi_ans
++            print(viterbi_ans)
+             return viterbi_ans, two_part
+ 
+ 
+diff --git a/PinyinTrie.py b/PinyinTrie.py
+index 7e244b3..1453d58 100644
+--- a/PinyinTrie.py
++++ b/PinyinTrie.py
+@@ -6,8 +6,8 @@ Description: Trie for pinyin split
+ Date: 2016-11-12
+ Author: QIU HU
+ """
+-from Queue import PriorityQueue
+-import pickle as pickle
++from queue import PriorityQueue
++import pickle
+ 
+ 
+ class HZ(object):
+diff --git a/gui.py b/gui.py
+index 92c8153..4feceef 100644
+--- a/gui.py
++++ b/gui.py
+@@ -1,5 +1,5 @@
+ # -*- coding:utf-8 -*-
+-from Tkinter import *
++from tkinter import *
+ 
+ import re
+ from GodTian_Pinyin import GodTian_Pinyin
+-- 
+2.25.1
+
