@@ -1,5 +1,7 @@
 # 文：中文 LSP 服务的尝试
 
+依赖安装： `pip install pygls pypinyin`
+
 当前使用方法：
 下载本仓库，同时克隆 https://github.com/whatbeg/GodTian_Pinyin 到本目录中
 
