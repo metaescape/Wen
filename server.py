@@ -8,10 +8,13 @@ import logging
 import os
 import sys
 import re
-from GodTian_Pinyin import GodTian_Pinyin
-
 proj_dir = os.path.dirname(os.path.realpath(sys.argv[0]))
-os.chdir(proj_dir)
+im_dir = os.path.join(proj_dir, "./completion")
+os.chdir(im_dir)
+sys.path.append(proj_dir) 
+sys.path.append(im_dir) 
+from completion import GodTian_Pinyin as gp
+
 DEBUG = False
 
 def debug_logger():
@@ -27,9 +30,11 @@ def debug_logger():
     logger.addHandler(fh)
     return logger
 
+logger = debug_logger()
+
 server = LanguageServer()
 
-godtian = GodTian_Pinyin()
+godtian = gp.GodTian_Pinyin()
 
 # @server.feature(COMPLETION, CompletionOptions(trigger_characters=[',']))
 @server.feature(COMPLETION)
