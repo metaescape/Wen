@@ -31,3 +31,5 @@ ln -s ~/codes/wen/server.py /usr/bin/wenls
 ```
 
 在 emacs org-mode 里执行 lsp-bridge-mode 启动 lsp 服务即可体验用补全进行拼音到汉字的输入转换
+
+注意：以上输入法只是 demo 型的，词汇有限，有时候拼音切分不准也会导致部分词汇无法输出。
