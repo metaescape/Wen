@@ -1,3 +1,4 @@
-GodTian_Pinyin
+GodTian_Pinyin/
 *pyc
 *.egg-info
+wen/demo.ipynb

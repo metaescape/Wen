@@ -13,24 +13,22 @@ from lsprotocol.types import (
     TextEdit,
     Range,
 )
-
-
-from pygls.server import LanguageServer
-
-import logging
 import os
+from pygls.server import LanguageServer
+import logging
+
 import sys
 import re
-import json
-from configuration import WenConfig
 
-proj_dir = os.path.dirname(os.path.dirname(os.path.realpath(sys.argv[0])))
+wen_dir = os.path.dirname(os.path.realpath(__file__))
+
+proj_dir = os.path.dirname(wen_dir)
 sys.path.append(proj_dir)
+from configuration import WenConfig
+from latex import in_latex_env
+from gpt import TypinGPT
 
-
-DEBUG = True
-use_godtian = True
-use_pinyin_initial = False
+CFG = WenConfig()
 
 
 def debug_logger():
@@ -51,18 +49,17 @@ def debug_logger():
 
 logger = debug_logger()
 
-try:
+if CFG.use_pinyin_initial:
     import jieba
     import jieba.posseg as pseg
 
     jieba.enable_parallel()
     from pypinyin import lazy_pinyin
-except:
-    use_pinyin_initial = False
 
-if use_godtian:
+
+if CFG.completion == "demo":
     im_dir = os.path.join(proj_dir, "./GodTian_Pinyin")
-    logger.debug(proj_dir)
+    logger.debug(os.path)
     os.chdir(im_dir)
 
     sys.path.append(im_dir)
@@ -70,17 +67,14 @@ if use_godtian:
 
     godtian = gp.GodTian_Pinyin()
 
-else:
-    godtian = False
-
-logger.debug(f"this is {godtian}")
+elif CFG.completion == "gpt2":
+    os.chdir(wen_dir)
+    typinG = TypinGPT(model_name_or_path=CFG.model_path)
 
 words = set(["中文语言服务", "wenls", "Metaescape"])
 
 # TODO: use \' as pinyin separator
 RE_START_WORD = re.compile("['A-Za-z_0-9\/]*$")
-
-wen_cfg = WenConfig()
 
 
 def generate_cands_from_godtian(prefix, context=None):
@@ -170,99 +164,67 @@ def generate_pinyin_map_from_words(words):
     return pinyin_map
 
 
-latex_env_pair = {
-    r"\(": r"\)",
-    r"\[": r"\]",
-    r"\begin": r"\end",
-}
-
-
-def latex_open_left(text):
-    for left, right in latex_env_pair.items():
-        left_idx = text.rfind(left)
-        if left_idx >= 0:
-            right_idx = text.rfind(right)
-            if right_idx < left_idx:
-                return left
-
-
-def latex_open_right(text, left, right):
-    right_idx = text.find(right)
-    if right_idx >= 0:
-        left_idx = text.find(left)
-        if left_idx < 0 or right_idx < left_idx:
-            return right
-
-
-def in_latex_env(doc, pos):
-    offset = doc.offset_at_position(pos)
-    text_before = doc.source[:offset]
-    text_after = doc.source[offset:]
-    left = latex_open_left(text_before)
-    if left:
-        right = latex_env_pair[left]
-        return latex_open_right(text_after, left, right) is not None
-    return False
-
-
-server = LanguageServer("wen-server", "v0.1")
+wenls = LanguageServer("wen-server", "v0.1")
 
 
 # @server.feature(COMPLETION, CompletionOptions(trigger_characters=[',']))
-@server.feature(TEXT_DOCUMENT_COMPLETION)
+@wenls.feature(TEXT_DOCUMENT_COMPLETION)
 def completions(params: CompletionParams):
     """Returns completion items."""
     pos = params.position
-    doc = server.workspace.get_document(params.text_document.uri)
+    doc = wenls.workspace.get_document(params.text_document.uri)
 
+    context = doc.word_at_position(pos, re.compile(".*"))
     cur_word = doc.word_at_position(pos, RE_START_WORD)
-    if DEBUG:
+    if CFG.debug:
         logger.debug(cur_word)
 
     completion_list = CompletionList(is_incomplete=False, items=[])
-
-    user_define_map = dict(
-        [
-            ("8alpha", "α"),
-            ("8beta", "β"),
-            ("8gamma", "γ"),
-            ("8Delta", "Δ"),
-            ("9/check", "- [ ] "),
-        ]
-    )
 
     # completion_list.add_items(items_from_map(user_define_map, pos))
 
     if in_latex_env(doc, pos) and cur_word.isalpha():
         completion_list.items.extend(
-            items_from_triple_map(wen_cfg.latex_table, pos, True)
+            items_from_triple_map(CFG.latex_table, pos, True)
         )
 
-    if use_pinyin_initial:
+    if CFG.use_pinyin_initial and cur_word.isalpha():
         pinyin_map = generate_pinyin_map_from_words(words)
         completion_list.items.extend(items_from_map(pinyin_map, pos))
 
-    if godtian and (cur_word.isalpha() or cur_word.replace("'", "").isalpha()):
-        pinyin = generate_cands_from_godtian(cur_word)
-        logger.debug(pinyin)
+    if CFG.completion == "demo" and (
+        cur_word.isalpha() or cur_word.replace("'", "").isalpha()
+    ):
+        cands = generate_cands_from_godtian(cur_word)
+
         completion_list.items.extend(
-            items_from_prefix_cands(cur_word, pinyin, pos)
+            items_from_prefix_cands(cur_word, cands, pos)
+        )
+    elif (
+        CFG.completion == "gpt2"
+        and len(cur_word) >= 3
+        and (cur_word.isalpha() or cur_word.replace("'", "").isalpha())
+    ):
+        cands = typinG.generate(context, cur_word)
+        completion_list.items.extend(
+            items_from_prefix_cands(cur_word, cands, pos)
         )
 
     return completion_list
 
 
-@server.feature(TEXT_DOCUMENT_DID_SAVE)
+@wenls.feature(TEXT_DOCUMENT_DID_SAVE)
 def did_change(ls, params: DidSaveTextDocumentParams):
     """Text document did change notification."""
     _update_words(ls, params)
 
 
-@server.feature(TEXT_DOCUMENT_DID_OPEN)
+@wenls.feature(TEXT_DOCUMENT_DID_OPEN)
 async def did_open(ls, params: DidOpenTextDocumentParams):
     """Text document did open notification."""
     ls.show_message("Text Document Did Open")
     _update_words(ls, params)
 
 
-server.start_io()
+if __name__ == "__main__":
+    wenls.start_io()
