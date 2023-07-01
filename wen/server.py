@@ -1,39 +1,22 @@
-#!/usr/bin/env python
-from pygls.capabilities import COMPLETION
-from pygls.lsp.methods import (
-    COMPLETION,
-    TEXT_DOCUMENT_DID_CHANGE,
+#!/home/pipz/miniconda3/envs/torch2/bin/python
+
+from lsprotocol.types import (
+    TEXT_DOCUMENT_COMPLETION,
+    CompletionItem,
+    CompletionList,
+    CompletionParams,
+    TEXT_DOCUMENT_COMPLETION,
     TEXT_DOCUMENT_DID_SAVE,
-    TEXT_DOCUMENT_DID_CLOSE,
     TEXT_DOCUMENT_DID_OPEN,
-    TEXT_DOCUMENT_SEMANTIC_TOKENS_FULL,
-)
-from pygls.lsp.types import (
-    CompletionItem,
-    CompletionList,
-    CompletionOptions,
-    CompletionParams,
-    ConfigurationItem,
-    TextEdit,
-    ConfigurationParams,
-    Diagnostic,
-    DidChangeTextDocumentParams,
     DidSaveTextDocumentParams,
-    DidCloseTextDocumentParams,
     DidOpenTextDocumentParams,
-    MessageType,
-    Position,
+    TextEdit,
     Range,
-    Registration,
-    RegistrationParams,
 )
+
+
 from pygls.server import LanguageServer
-from pygls.lsp import (
-    CompletionItem,
-    CompletionList,
-    CompletionOptions,
-    CompletionParams,
-)
+
 import logging
 import os
 import sys
@@ -46,28 +29,8 @@ sys.path.append(proj_dir)
 
 
 DEBUG = True
-use_godtian = False
+use_godtian = True
 use_pinyin_initial = False
-
-
-try:
-    import jieba
-    import jieba.posseg as pseg
-
-    jieba.enable_parallel()
-    from pypinyin import lazy_pinyin
-except:
-    use_pinyin_initial = False
-
-if use_godtian:
-    im_dir = os.path.join(proj_dir, "./completion")
-    os.chdir(im_dir)
-    sys.path.append(im_dir)
-    from completion import GodTian_Pinyin as gp
-
-    godtian = gp.GodTian_Pinyin()
-else:
-    godtian = False
 
 
 def debug_logger():
@@ -87,6 +50,30 @@ def debug_logger():
 
 
 logger = debug_logger()
+
+try:
+    import jieba
+    import jieba.posseg as pseg
+
+    jieba.enable_parallel()
+    from pypinyin import lazy_pinyin
+except:
+    use_pinyin_initial = False
+
+if use_godtian:
+    im_dir = os.path.join(proj_dir, "./GodTian_Pinyin")
+    logger.debug(proj_dir)
+    os.chdir(im_dir)
+
+    sys.path.append(im_dir)
+    import GodTian_Pinyin as gp
+
+    godtian = gp.GodTian_Pinyin()
+
+else:
+    godtian = False
+
+logger.debug(f"this is {godtian}")
 
 words = set(["中文语言服务", "wenls", "Metaescape"])
 
@@ -119,12 +106,14 @@ def items_from_map(symbol_map, pos):
     return items
 
 
-def items_from_triple_map(triples, pos):
+def items_from_triple_map(triples, pos, tail_space=False):
     """
     mainly for latex
     """
     items = []
     for prefix, show, insert in triples:
+        if tail_space:
+            insert = insert + " "
         text_edit = TextEdit(range=Range(start=pos, end=pos), new_text=show)
         item = CompletionItem(label=prefix)
         item.text_edit = text_edit
@@ -201,7 +190,7 @@ def latex_open_right(text, left, right):
     right_idx = text.find(right)
     if right_idx >= 0:
         left_idx = text.find(left)
-        if right_idx > left_idx:
+        if left_idx < 0 or right_idx < left_idx:
             return right
 
 
@@ -216,10 +205,11 @@ def in_latex_env(doc, pos):
     return False
 
 
-server = LanguageServer()
+server = LanguageServer("wen-server", "v0.1")
+
 
 # @server.feature(COMPLETION, CompletionOptions(trigger_characters=[',']))
-@server.feature(COMPLETION)
+@server.feature(TEXT_DOCUMENT_COMPLETION)
 def completions(params: CompletionParams):
     """Returns completion items."""
     pos = params.position
@@ -244,17 +234,18 @@ def completions(params: CompletionParams):
     # completion_list.add_items(items_from_map(user_define_map, pos))
 
     if in_latex_env(doc, pos) and cur_word.isalpha():
-        completion_list.add_items(
-            items_from_triple_map(wen_cfg.latex_table, pos)
+        completion_list.items.extend(
+            items_from_triple_map(wen_cfg.latex_table, pos, True)
         )
 
     if use_pinyin_initial:
         pinyin_map = generate_pinyin_map_from_words(words)
-        completion_list.add_items(items_from_map(pinyin_map, pos))
+        completion_list.items.extend(items_from_map(pinyin_map, pos))
 
     if godtian and (cur_word.isalpha() or cur_word.replace("'", "").isalpha()):
         pinyin = generate_cands_from_godtian(cur_word)
-        completion_list.add_items(
+        logger.debug(pinyin)
+        completion_list.items.extend(
             items_from_prefix_cands(cur_word, pinyin, pos)
         )
 

@@ -18,7 +18,7 @@ class WenConfig:
         if os.path.exists(settings_path):
             with open(settings_path, "r") as f:
                 settings = json.load(f)
-        return settings
+                return settings
 
     # def read_rime_vocab(settings):
     #     vocab_paths = settings["vocabularies"]
@@ -26,7 +26,7 @@ class WenConfig:
     #     for path in vocab_paths["rime"]:
     #         vocabs.extends(read_rime_vocab(path))
     #     return vocabs
-
+    
     def read_latex_table(self):
         if "latex.table.path" not in self.setting:
             print("latex table file not set")
@@ -38,5 +38,8 @@ class WenConfig:
         table = []
         with open(path) as f:
             for line in f.readlines():
-                table.append(line.strip().split())
+                items = line.strip().split()
+                if len(items) == 3:
+                    table.append(items)
         return table
+
