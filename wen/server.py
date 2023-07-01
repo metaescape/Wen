@@ -1,4 +1,4 @@
-#!/home/pipz/miniconda3/envs/torch2/bin/python
+#!/usr/bin/python3
 
 from lsprotocol.types import (
     TEXT_DOCUMENT_COMPLETION,

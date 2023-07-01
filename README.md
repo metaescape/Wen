@@ -137,19 +137,3 @@ ten † \dagger
 star * \star
 ... ⋯ \cdot
 ```
-
-## 可能遇到的问题
-
-如果执行 `bash install.sh` 后，系统还是无法找到 wenls， 那么可以手动在系统路径下建立 ~/codes/wen/server.py 服务的软链接，名字需要是 wenls（确保 emacs 中能够直接执行 wenls 这个命令，这样 lsp-bridge 才能正确建立通信），比如：
-
-```
-ln -s ~/codes/wen/server.py ~/.local/bin/wenls
-```
-
-当然如果你是 sudo 用户，也可以把软链接建立在 /bin, /usr/bin, /usr/local/bin 这些系统路径下，如
-
-```
-ln -s ~/codes/wen/server.py /usr/bin/wenls
-```
-
-其他问题可以通过查看 `*lsp-bridge*` 来查找
