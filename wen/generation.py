@@ -502,4 +502,4 @@ def beam_search(
                 hidden_states=decoder_hidden_states,
             )
     else:
-        return sequence_outputs["sequences"]
+        return sequence_outputs["sequences"], model_kwargs["past_key_values"]

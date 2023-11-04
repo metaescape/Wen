@@ -1,25 +1,41 @@
 #!/usr/bin/python3
 
+from typing import Any, List, Optional, Union
 from lsprotocol.types import (
+    INITIALIZE,
     TEXT_DOCUMENT_COMPLETION,
+    CompletionOptions,
+    ConfigurationParams,
     CompletionItem,
     CompletionList,
     CompletionParams,
     TEXT_DOCUMENT_COMPLETION,
     TEXT_DOCUMENT_DID_SAVE,
     TEXT_DOCUMENT_DID_OPEN,
+    MessageType,
     DidSaveTextDocumentParams,
     DidOpenTextDocumentParams,
+    CompletionItemKind,
     TextEdit,
     Range,
+    InitializeParams,
+    InitializeResult,
+    ServerCapabilities,
+    TextDocumentSyncKind,
 )
+
+import cattrs
 import os
 from pygls.server import LanguageServer
 import logging
 
+from pygls.protocol import LanguageServerProtocol, lsp_method
 import sys
 import re
+import asyncio
 
+
+__version__ = "0.0.1"
 wen_dir = os.path.dirname(os.path.realpath(__file__))
 
 proj_dir = os.path.dirname(wen_dir)
@@ -116,13 +132,29 @@ def items_from_triple_map(triples, pos, tail_space=False):
     return items
 
 
+def convert_suggestion_to_completion_item(pinyin, cand, pos):
+    label = cand  # Assuming cand is already a string
+    kind = CompletionItemKind.Text
+    filter_text = pinyin  # Assuming cand is a suitable filter text
+    text_edit = TextEdit(
+        range=Range(
+            start=pos, end=pos  # Assuming pos is already a position object
+        ),
+        new_text=cand,
+    )
+
+    completion_item = CompletionItem(
+        label=label, kind=kind, filter_text=filter_text, text_edit=text_edit
+    )
+
+    return completion_item
+
+
 def items_from_prefix_cands(prefix, cands, pos):
-    items = []
-    for cand in cands:
-        text_edit = TextEdit(range=Range(start=pos, end=pos), new_text=cand)
-        item = CompletionItem(label=prefix)
-        item.text_edit = text_edit
-        items.append(item)
+    items = [
+        convert_suggestion_to_completion_item(prefix, cand, pos)
+        for cand in cands
+    ]
     return items
 
 
@@ -164,12 +196,58 @@ def generate_pinyin_map_from_words(words):
     return pinyin_map
 
 
-wenls = LanguageServer("wen-server", "v0.1")
+class WenLanguageServerProtocol(LanguageServerProtocol):
+    """Override some built-in functions."""
+
+    _server: "WenLanguageServer"
+
+    @lsp_method(INITIALIZE)
+    def lsp_initialize(self, params: InitializeParams) -> InitializeResult:
+        """Override built-in initialization.
+
+        Here, we can conditionally register functions to features based
+        on client capabilities and initializationOptions.
+        """
+        server = self._server
+        try:
+            server.initialization_options = (
+                {}
+                if params.initialization_options is None
+                else params.initialization_options
+            )
+
+        except cattrs.BaseValidationError as error:
+            msg = (
+                "Invalid InitializationOptions, using defaults:"
+                f" {cattrs.transform_error(error)}"
+            )
+            server.show_message(msg, msg_type=MessageType.Error)
+            server.show_message_log(msg, msg_type=MessageType.Error)
+        #  所有的初始化选项都在这里：
+        logger.debug(params.initialization_options)
+
+        initialize_result: InitializeResult = super().lsp_initialize(params)
+        return initialize_result
 
 
-# @server.feature(COMPLETION, CompletionOptions(trigger_characters=[',']))
+class WenLanguageServer(LanguageServer):
+    """Wen language server."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+
+
+wenls = WenLanguageServer(
+    name="wen-server",
+    version=__version__,
+    protocol_cls=WenLanguageServerProtocol,
+)
+
+CFG.debug = True
+
+
 @wenls.feature(TEXT_DOCUMENT_COMPLETION)
-def completions(params: CompletionParams):
+async def completions(params: CompletionParams):
     """Returns completion items."""
     pos = params.position
     doc = wenls.workspace.get_document(params.text_document.uri)
@@ -177,9 +255,9 @@ def completions(params: CompletionParams):
     context = doc.word_at_position(pos, re.compile(".*"))
     cur_word = doc.word_at_position(pos, RE_START_WORD)
     if CFG.debug:
-        logger.debug(cur_word)
+        logger.debug("cur_word: %s", cur_word)
 
-    completion_list = CompletionList(is_incomplete=False, items=[])
+    completion_list = CompletionList(is_incomplete=True, items=[])
 
     # completion_list.add_items(items_from_map(user_define_map, pos))
 
@@ -200,17 +278,35 @@ def completions(params: CompletionParams):
         completion_list.items.extend(
             items_from_prefix_cands(cur_word, cands, pos)
         )
-    elif (
-        CFG.completion == "gpt2"
-        and len(cur_word) >= 3
-        and (cur_word.isalpha() or cur_word.replace("'", "").isalpha())
+    elif CFG.completion == "gpt2" and (
+        cur_word.isalpha() or cur_word.replace("'", "").isalpha()
     ):
-        cands = typinG.generate(context, cur_word)
         completion_list.items.extend(
-            items_from_prefix_cands(cur_word, cands, pos)
+            items_from_prefix_cands(cur_word, [cur_word], pos)
+        )
+        loop = asyncio.get_event_loop()
+        loop.create_task(
+            generate_and_update_completions(
+                context, cur_word, completion_list, pos
+            )
         )
 
     return completion_list
+
+
+async def generate_and_update_completions(
+    context, cur_word, completion_list, pos
+):
+    try:
+        # 在后台执行 typinG.generate 函数
+        cands = await typinG.generate(context, cur_word)
+        # 更新补全列表
+        completion_list.items.clear()
+        completion_list.items.extend(
+            items_from_prefix_cands(cur_word, cands, pos)
+        )
+    except:
+        logger.debug("generate: %s", cands[0])
 
 
 @wenls.feature(TEXT_DOCUMENT_DID_SAVE)
