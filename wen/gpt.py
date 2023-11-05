@@ -81,7 +81,7 @@ class TypinGPT:
 
         # if context in self.past_key_values_pools:
         #     past_key_values = self.past_key_values_pools[context]
-        output_ids, self.recent_key_values = self.model.generate(
+        output_ids, self.recent_key_values, beam_history = self.model.generate(
             input_ids=context_ids,
             num_beams=10,
             num_return_sequences=9,

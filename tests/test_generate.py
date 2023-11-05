@@ -12,5 +12,16 @@ def test_cls_past_key_values():
 
 
 def test_past_key_values_as_generate_inpu():
+    # empty context
+    res = engine.generate("", "nihao")
+    assert res[0] == "你好"
+
+    # normal case
+    engine.recent_key_values = None
     engine.generate("你好", "ma")
-    breakpoint()
+    assert engine.recent_key_values[0][0].size(2) == 3
+
+    # continue generate
+    engine.generate("", "nihao")
+    engine.generate("你好", "ma")
+    engine.generate("你好吗,", "zoule")
