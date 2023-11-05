@@ -1,48 +1,42 @@
 #!/usr/bin/python3
 
+import asyncio
+import logging
+import os
+import re
+import sys
 from typing import Any, List, Optional, Union
+import cattrs
+
 from lsprotocol.types import (
     INITIALIZE,
     TEXT_DOCUMENT_COMPLETION,
-    CompletionOptions,
-    ConfigurationParams,
-    CompletionItem,
-    CompletionList,
-    CompletionParams,
-    TEXT_DOCUMENT_COMPLETION,
-    TEXT_DOCUMENT_DID_SAVE,
     TEXT_DOCUMENT_DID_OPEN,
-    MessageType,
-    DidSaveTextDocumentParams,
-    DidOpenTextDocumentParams,
+    TEXT_DOCUMENT_DID_SAVE,
+    CompletionItem,
     CompletionItemKind,
-    TextEdit,
-    Range,
+    CompletionList,
+    CompletionOptions,
+    CompletionParams,
+    ConfigurationParams,
+    DidOpenTextDocumentParams,
+    DidSaveTextDocumentParams,
     InitializeParams,
     InitializeResult,
+    MessageType,
+    Range,
     ServerCapabilities,
     TextDocumentSyncKind,
+    TextEdit,
 )
-
-import cattrs
-import os
-from pygls.server import LanguageServer
-import logging
-
 from pygls.protocol import LanguageServerProtocol, lsp_method
-import sys
-import re
-import asyncio
-
+from pygls.server import LanguageServer
 
 __version__ = "0.0.1"
-wen_dir = os.path.dirname(os.path.realpath(__file__))
 
-proj_dir = os.path.dirname(wen_dir)
-sys.path.append(proj_dir)
-from configuration import WenConfig
-from latex import in_latex_env
-from gpt import TypinGPT
+from wen.configuration import WenConfig
+from wen.gpt import TypinGPT
+from wen.latex import in_latex_env
 
 CFG = WenConfig()
 
@@ -84,7 +78,6 @@ if CFG.completion == "demo":
     godtian = gp.GodTian_Pinyin()
 
 elif CFG.completion == "gpt2":
-    os.chdir(wen_dir)
     typinG = TypinGPT(model_name_or_path=CFG.model_path)
 
 words = set(["中文语言服务", "wenls", "Metaescape"])
@@ -299,7 +292,7 @@ async def generate_and_update_completions(
 ):
     try:
         # 在后台执行 typinG.generate 函数
-        cands = await typinG.generate(context, cur_word)
+        cands = typinG.generate(context, cur_word)
         # 更新补全列表
         completion_list.items.clear()
         completion_list.items.extend(

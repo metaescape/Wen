@@ -329,7 +329,21 @@ def beam_search(
     beam_scores[:, 1:] = -1e9
     beam_scores = beam_scores.view((batch_size * num_beams,))
 
+    if model_kwargs["past_key_values"] is not None:
+        if model_kwargs["past_key_values"][0][0].size(0) == 1:
+            expanded_past_key_values = []
+            # expand past_key_values
+            for i, (key, value) in enumerate(model_kwargs["past_key_values"]):
+                expanded_past_key_values.append(
+                    (
+                        key.repeat_interleave(num_beams, dim=0),
+                        value.repeat_interleave(num_beams, dim=0),
+                    )
+                )
+            model_kwargs["past_key_values"] = expanded_past_key_values
+
     this_peer_finished = False  # used by synced_gpus only
+    model_kwargs["loop_step"] = 0
     while True:
         if synced_gpus:
             # Under synced_gpus the `forward` call must continue until all gpus complete their sequence.
@@ -353,6 +367,7 @@ def beam_search(
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
         )
+        model_kwargs["loop_step"] += 1
 
         if synced_gpus and this_peer_finished:
             cur_len = cur_len + 1
@@ -503,3 +518,49 @@ def beam_search(
             )
     else:
         return sequence_outputs["sequences"], model_kwargs["past_key_values"]
+
+
+def new_prepare_inputs_for_generation(
+    self, input_ids, past_key_values=None, inputs_embeds=None, **kwargs
+):
+    loop_step = kwargs.get("loop_step", 0)
+    token_type_ids = kwargs.get("token_type_ids", None)
+    # only last token for inputs_ids if past is defined in kwargs
+    if past_key_values:
+        if loop_step != 0:
+            input_ids = input_ids[:, -1].unsqueeze(-1)
+            if token_type_ids is not None:
+                token_type_ids = token_type_ids[:, -1].unsqueeze(-1)
+
+    attention_mask = kwargs.get("attention_mask", None)
+    position_ids = kwargs.get("position_ids", None)
+
+    if attention_mask is not None and position_ids is None:
+        # create position_ids on the fly for batch generation
+        position_ids = attention_mask.long().cumsum(-1) - 1
+        position_ids.masked_fill_(attention_mask == 0, 1)
+        if past_key_values:
+            pkv_offset = past_key_values[0][0].size(-2)
+            if loop_step == 0:
+                position_ids = position_ids + pkv_offset
+            else:
+                position_ids = position_ids[:, -1].unsqueeze(-1)
+    else:
+        position_ids = None
+
+    # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
+    if inputs_embeds is not None and past_key_values is None:
+        model_inputs = {"inputs_embeds": inputs_embeds}
+    else:
+        model_inputs = {"input_ids": input_ids}
+    attention_mask = None
+    model_inputs.update(
+        {
+            "past_key_values": past_key_values,
+            "use_cache": kwargs.get("use_cache"),
+            "position_ids": position_ids,
+            "attention_mask": attention_mask,
+            "token_type_ids": token_type_ids,
+        }
+    )
+    return model_inputs

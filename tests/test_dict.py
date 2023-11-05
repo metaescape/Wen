@@ -42,5 +42,5 @@ def load_rime_userdb(path):
     return pinyin_dict
 
 
-load_rime_pinyin_dict("/home/pipz/myconf/rime/dicts/food.dict.yaml")
-load_rime_userdb("/home/pipz/myconf/rime/extended.userdb.txt")
+# load_rime_pinyin_dict("/home/pipz/myconf/rime/dicts/food.dict.yaml")
+# load_rime_userdb("/home/pipz/myconf/rime/extended.userdb.txt")
