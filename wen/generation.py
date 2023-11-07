@@ -306,7 +306,7 @@ def beam_search(
             model_kwargs["past_key_values"] = expanded_past_key_values
 
     model_kwargs["loop_step"] = 0
-    beam_history = []
+    beam_scores_list = []
     while True:
         model_inputs = self.prepare_inputs_for_generation(
             input_ids, **model_kwargs
@@ -319,11 +319,7 @@ def beam_search(
         model_kwargs["loop_step"] += 1
 
         next_token_logits = outputs.logits[:, -1, :]
-        # hack: adjust tokens for Marian. For Marian we have to make sure that the `pad_token_id`
-        # cannot be generated both before and after the `nn.functional.log_softmax` operation.
-        next_token_logits = self.adjust_logits_during_generation(
-            next_token_logits, cur_len=cur_len
-        )
+
         next_token_scores = nn.functional.log_softmax(
             next_token_logits, dim=-1
         )  # (batch_size * num_beams, vocab_size)
@@ -369,11 +365,11 @@ def beam_search(
             eos_token_id=eos_token_id,
             beam_indices=beam_indices,
         )
-        beam_history.append(copy.deepcopy(beam_scorer))
-
         beam_scores = beam_outputs["next_beam_scores"]
         beam_next_tokens = beam_outputs["next_beam_tokens"]
         beam_idx = beam_outputs["next_beam_indices"]
+
+        beam_scores_list.append(beam_outputs["next_beam_scores"])
 
         input_ids = torch.cat(
             [input_ids[beam_idx, :], beam_next_tokens.unsqueeze(-1)], dim=-1
@@ -409,7 +405,7 @@ def beam_search(
     return (
         sequence_outputs["sequences"],
         model_kwargs["past_key_values"],
-        beam_history,
+        beam_scores_list,
     )
 
 

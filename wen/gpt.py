@@ -10,6 +10,34 @@ from wen.pinyin import get_pinyin_to_char
 from typing import Union
 from pinyinsplit import PinyinSplit
 from functools import lru_cache
+from dataclasses import dataclass
+from transformers.utils import ModelOutput
+from typing import Optional, Tuple
+
+
+@dataclass
+class GenerationOutput(ModelOutput):
+    """
+    Base class for outputs of decoder-only generation models using Beamsearch.
+
+
+    Args:
+        candidates_list (`Tuple[list[str]]`)
+            Tuple of generated token Tuple for each beam;
+        input_ids (`torch.LongTensor` of shape `(num_beams, sequence_length)`)
+            input token ids for each beam.
+        pkv (`Optional[list[list[torch.FloatTensor]]]` of length `num_layers`)
+            Tuple of the past key value tuples used by the model for each beam.
+            Each tuple has a shape of `(2, batch_size, num_heads, sequence_length, embed_size_per_head)`
+        beam_scores_list (`Tuple[torch.FloatTensor]` of shape `(num_beams)`)
+            Tuple of the scores for each step for each beam.
+
+    """
+
+    candidates_list: Optional[Tuple[Tuple[str]]] = None
+    input_ids: Optional[torch.LongTensor] = None
+    pkv: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
+    beam_scores_list: Optional[Tuple[torch.FloatTensor]] = None
 
 
 class TypinGPT:
@@ -30,6 +58,8 @@ class TypinGPT:
             device
         )
         self.context_length = 10
+        self.num_return_sequences = 9
+        self.num_beams = 10
         self.model.eval()
         self.tokenizer = BertTokenizer.from_pretrained(model_name_or_path)
         self.processors = LogitsProcessorList()
@@ -81,21 +111,30 @@ class TypinGPT:
 
         # if context in self.past_key_values_pools:
         #     past_key_values = self.past_key_values_pools[context]
-        output_ids, self.recent_key_values, beam_history = self.model.generate(
+        output_ids, last_key_values, beam_history = self.model.generate(
             input_ids=context_ids,
-            num_beams=10,
-            num_return_sequences=9,
+            num_beams=self.num_beams,
+            num_return_sequences=self.num_return_sequences,
             logits_processor=self.processors,
             max_length=max_length,
             constraint_pinyin_list=constraint_pinyin_list,
             past_key_values=context_key_values,
         )
         res = []
+        candidates_list = []
         output_ids = output_ids[:, context_len:]
-        if logger and self.recent_key_values:
-            logger.debug(self.recent_key_values[0][0].size())
+        if logger and last_key_values:
+            logger.debug(last_key_values.size())
         for i in range(output_ids.shape[0]):
-            res.append(self.tokenizer.decode(output_ids[i]).replace(" ", ""))
+            token_list = self.tokenizer.convert_ids_to_tokens(output_ids[i])
+            res.append("".join(token_list))
+            candidates_list.append(tuple(token_list))
+        self.last = GenerationOutput(
+            candidates_list=tuple(candidates_list),
+            input_ids=output_ids,
+            pkv=last_key_values,
+            beam_scores_list=beam_history,
+        )
         return res
 
     def create_context_pkv(self, context) -> tuple:
