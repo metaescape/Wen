@@ -247,6 +247,7 @@ async def completions(params: CompletionParams):
 
     context = doc.word_at_position(pos, re.compile(".*"))
     cur_word = doc.word_at_position(pos, RE_START_WORD)
+    context = context[: -len(cur_word)]
     if CFG.debug:
         logger.debug("cur_word: %s", cur_word)
 
@@ -292,7 +293,8 @@ async def generate_and_update_completions(
 ):
     try:
         # 在后台执行 typinG.generate 函数
-        cands = typinG.generate(context, cur_word)
+        logger.debug("context: %s", context)
+        cands = typinG.generate(context, cur_word, logger)
         # 更新补全列表
         completion_list.items.clear()
         completion_list.items.extend(

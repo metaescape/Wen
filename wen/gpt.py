@@ -13,6 +13,7 @@ from functools import lru_cache
 from dataclasses import dataclass
 from transformers.utils import ModelOutput
 from typing import Optional, Tuple
+from collections import deque
 
 
 @dataclass
@@ -39,6 +40,30 @@ class GenerationOutput(ModelOutput):
     pkv: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     beam_scores_list: Optional[Tuple[torch.FloatTensor]] = None
 
+    def match_context(self, context: tuple):
+        """
+        match the candidates with the context
+        """
+        candidates, input_ids, pkv, beam_history = None, None, None, None
+        for i, candidates in enumerate(self.candidates_list):
+            if candidates == context:
+                # return pkv
+                candidates = self.candidates_list[i]
+                pkv = tuple(
+                    [
+                        (
+                            self.pkv[j][0][i : i + 1, :, :, :],
+                            self.pkv[j][1][i : i + 1, :, :, :],
+                        )
+                        for j in range(len(self.pkv))
+                    ]
+                )
+                input_ids = self.input_ids[i : i + 1, :]
+                beam_history = None
+                break
+
+        return candidates, input_ids, pkv, beam_history
+
 
 class TypinGPT:
     def __init__(
@@ -60,6 +85,7 @@ class TypinGPT:
         self.context_length = 10
         self.num_return_sequences = 9
         self.num_beams = 10
+        self.max_history_length = 30
         self.model.eval()
         self.tokenizer = BertTokenizer.from_pretrained(model_name_or_path)
         self.processors = LogitsProcessorList()
@@ -68,8 +94,10 @@ class TypinGPT:
             PinyinGPTCompatibleLogitsProcessor(self.pinyin_dict)
         )
         self.pys = PinyinSplit()
-        self.past_key_values_pools = {}
-        self.recent_key_values = None
+
+        self.last = GenerationOutput()
+        self.history = deque(maxlen=self.max_history_length)
+        self.last_pinyin = ""
         self.cls_kv = []
         self.init_cls_kv()
 
@@ -77,8 +105,8 @@ class TypinGPT:
         pinyin_list = self.pys.split(pinyin)
         return pinyin_list[0] if pinyin_list else []
 
-    def prepare_context_ids(self, context, with_cls=True) -> torch.Tensor:
-        start = 0 if with_cls else 1
+    def prepare_context_ids(self, context) -> torch.Tensor:
+        start = 0 if context == "" else 1
         context_ids = self.tokenizer.encode(context)[start:-1]
         input_ids = (
             torch.Tensor(context_ids).long().unsqueeze(0).to(self.model.device)
@@ -96,10 +124,16 @@ class TypinGPT:
     def generate(self, context, pinyin: Union[str, list], logger=None) -> list:
         context = context[-self.context_length :]
 
-        context_key_values, context = self.cls_context(context)
+        background, full_context_ids, pkv, beam_history = self.search_history(
+            context
+        )
 
-        with_cls = True if context == "" else False
-        context_ids = self.prepare_context_ids(context, with_cls=with_cls)
+        if full_context_ids is None:
+            context_ids = self.prepare_context_ids(context)
+            full_context_ids = context_ids
+        else:
+            context_ids = full_context_ids[:, -1:]
+
         constraint_pinyin_list = (
             pinyin if isinstance(pinyin, list) else self.split(pinyin)
         )
@@ -109,8 +143,9 @@ class TypinGPT:
         context_len = context_ids.size(1)
         max_length = context_len + len(constraint_pinyin_list)
 
-        # if context in self.past_key_values_pools:
-        #     past_key_values = self.past_key_values_pools[context]
+        if logger and background:
+            logger.debug(f"context pkv shape : {pkv[0][0].shape}")
+
         output_ids, last_key_values, beam_history = self.model.generate(
             input_ids=context_ids,
             num_beams=self.num_beams,
@@ -118,58 +153,46 @@ class TypinGPT:
             logits_processor=self.processors,
             max_length=max_length,
             constraint_pinyin_list=constraint_pinyin_list,
-            past_key_values=context_key_values,
+            past_key_values=pkv,
         )
+
         res = []
         candidates_list = []
-        output_ids = output_ids[:, context_len:]
-        if logger and last_key_values:
-            logger.debug(last_key_values.size())
-        for i in range(output_ids.shape[0]):
-            token_list = self.tokenizer.convert_ids_to_tokens(output_ids[i])
+        target_ids = output_ids[:, context_len:]
+
+        for i in range(target_ids.shape[0]):
+            token_list = self.tokenizer.convert_ids_to_tokens(target_ids[i])
             res.append("".join(token_list))
             candidates_list.append(tuple(token_list))
+
+        if pinyin.startswith(self.last_pinyin):
+            combo = True
+
+        output_ids = torch.cat(
+            (full_context_ids.expand(target_ids.size(0), -1), target_ids),
+            dim=1,
+        )
+
+        candidates_list = [background + item for item in candidates_list]
         self.last = GenerationOutput(
             candidates_list=tuple(candidates_list),
             input_ids=output_ids,
             pkv=last_key_values,
             beam_scores_list=beam_history,
         )
+        self.last_pinyin = pinyin
+        self.history.append(self.last)
+        # if context == "你好": # test debug
+        #     breakpoint()
         return res
 
-    def create_context_pkv(self, context) -> tuple:
-        """concatenate the past_key_values of oth the CLS token and the pure context
-        most of the time, just retren self.recent_key_values (already concatenated)
-
-        but we need to keep the length of the past_key_values not exceeding self.context_length + 1
-
-        return (past_key_values, remaining_context)
-        """
-
-        if self.recent_key_values:
-            length = self.recent_key_values[0][0].size(2)
-            if length > self.context_length + 1:
-                new_key_values = []
-                for key, value in self.recent_key_values:
-                    new_key_values.append(
-                        (
-                            key[:, :, -self.context_length - 1 :, :],
-                            value[:, :, -self.context_length - 1 :, :],
-                        )
-                    )
-                self.recent_key_values = new_key_values
-
-            last_context = context[-1] if context else context
-            return self.recent_key_values, context
-
-        else:
-            return self.cls_kv, context
-
-    def cls_context(self, context):
-        return self.cls_kv, context
-
-    def lru_context(self, context):
-        if context in self.past_key_values_pools:
-            return self.past_key_values_pools[context], context
-        else:
-            return self.cls_kv, context
+    def search_history(self, context, pinyin=None):
+        context_tokens = self.tokenizer.tokenize(context)
+        context_key = tuple(context_tokens)
+        for i in range(len(self.history)):
+            candidates, input_ids, pkv, beam_history = self.history[
+                i
+            ].match_context(context_key)
+            if pkv is not None:
+                return candidates, input_ids, pkv, beam_history
+        return tuple(), None, None, None
