@@ -5,6 +5,7 @@ from wen.generation import (
     PinyinGPTCompatibleLogitsProcessor,
     new_prepare_inputs_for_generation,
     generate,
+    _expand_inputs_for_generation,
 )
 from wen.pinyin import get_pinyin_to_char
 from typing import Union
@@ -35,6 +36,7 @@ class GenerationOutput(ModelOutput):
 
     """
 
+    key: Optional[Tuple[str]] = None
     candidates_list: Optional[Tuple[Tuple[str]]] = None
     input_ids: Optional[torch.LongTensor] = None
     pkv: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
@@ -43,22 +45,44 @@ class GenerationOutput(ModelOutput):
     def match_context(self, context: tuple):
         """
         match the candidates with the context
+        there are two kind of matching:
+        1. exact full context matching
+        2. partial context matching
+
+        all returned tensors are of shape (num_beams, ...), including exact full context matching
         """
+
+        if self.key == context:
+            return (
+                self.candidates_list,
+                self.input_ids,
+                self.pkv,
+                self.beam_scores_list,
+            )
+
         candidates, input_ids, pkv, beam_history = None, None, None, None
+        num_beams = self.input_ids.size(0)
+
         for i, candidates in enumerate(self.candidates_list):
             if candidates == context:
                 # return pkv
-                candidates = self.candidates_list[i]
+                candidates = (self.candidates_list[i],) * num_beams
                 pkv = tuple(
                     [
                         (
-                            self.pkv[j][0][i : i + 1, :, :, :],
-                            self.pkv[j][1][i : i + 1, :, :, :],
+                            self.pkv[j][0][
+                                i : i + 1, :, :, :
+                            ].repeat_interleave(num_beams, 0),
+                            self.pkv[j][1][
+                                i : i + 1, :, :, :
+                            ].repeat_interleave(num_beams, 0),
                         )
                         for j in range(len(self.pkv))
                     ]
                 )
-                input_ids = self.input_ids[i : i + 1, :]
+                input_ids = self.input_ids[i : i + 1, :].repeat_interleave(
+                    num_beams, 0
+                )
                 beam_history = None
                 break
 
@@ -71,22 +95,13 @@ class TypinGPT:
         model_name_or_path="aihijo/gpt2-zh-21k",
         pinyin_json="wen/data/pinyin2char.json",
     ) -> None:
-        GPT2LMHeadModel.beam_search = beam_search
-        # deprecate params validation
-        GPT2LMHeadModel._validate_model_kwargs = lambda self, model_kwargs: 1
-        GPT2LMHeadModel.prepare_inputs_for_generation = (
-            new_prepare_inputs_for_generation
-        )
-        GPT2LMHeadModel.generate = generate
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = GPT2LMHeadModel.from_pretrained(model_name_or_path).to(
-            device
-        )
+        self.model = self.init_model(model_name_or_path)
+
         self.context_length = 10
-        self.num_return_sequences = 9
+        self.num_return_candidates = 9
         self.num_beams = 10
         self.max_history_length = 30
-        self.model.eval()
+
         self.tokenizer = BertTokenizer.from_pretrained(model_name_or_path)
         self.processors = LogitsProcessorList()
         self.pinyin_dict = get_pinyin_to_char(self.tokenizer, pinyin_json)
@@ -100,6 +115,22 @@ class TypinGPT:
         self.last_pinyin = ""
         self.cls_kv = []
         self.init_cls_kv()
+
+    def init_model(self, model_name_or_path):
+        GPT2LMHeadModel.beam_search = beam_search
+        # deprecate params validation
+        GPT2LMHeadModel._validate_model_kwargs = lambda self, model_kwargs: 1
+        GPT2LMHeadModel.prepare_inputs_for_generation = (
+            new_prepare_inputs_for_generation
+        )
+        GPT2LMHeadModel.generate = generate
+        GPT2LMHeadModel._expand_inputs_for_generation = (
+            _expand_inputs_for_generation
+        )
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = GPT2LMHeadModel.from_pretrained(model_name_or_path).to(device)
+        model.eval()
+        return model
 
     def split(self, pinyin: str):
         pinyin_list = self.pys.split(pinyin)
@@ -124,8 +155,19 @@ class TypinGPT:
     def generate(self, context, pinyin: Union[str, list], logger=None) -> list:
         context = context[-self.context_length :]
 
+        pin_context = ""
+        current_pinyin = pinyin
+        if pinyin.startswith(self.last_pinyin):
+            combo = True
+            # get the suffix
+            current_pinyin = pinyin[len(self.last_pinyin) :]
+            pin_context = pinyin[: len(self.last_pinyin)]
+
+        context_query, pinyin_query = self.create_query(context, pin_context)
+        query = context_query + pinyin_query
+
         background, full_context_ids, pkv, beam_history = self.search_history(
-            context
+            query
         )
 
         if full_context_ids is None:
@@ -134,22 +176,20 @@ class TypinGPT:
         else:
             context_ids = full_context_ids[:, -1:]
 
-        constraint_pinyin_list = (
-            pinyin if isinstance(pinyin, list) else self.split(pinyin)
-        )
+        constraint_pinyin_list = self.split(current_pinyin)
         if constraint_pinyin_list == []:
             return []
 
         context_len = context_ids.size(1)
         max_length = context_len + len(constraint_pinyin_list)
 
-        if logger and background:
-            logger.debug(f"context pkv shape : {pkv[0][0].shape}")
+        if logger:
+            logger.debug(background)
 
         output_ids, last_key_values, beam_history = self.model.generate(
             input_ids=context_ids,
             num_beams=self.num_beams,
-            num_return_sequences=self.num_return_sequences,
+            num_return_sequences=self.num_beams,
             logits_processor=self.processors,
             max_length=max_length,
             constraint_pinyin_list=constraint_pinyin_list,
@@ -165,16 +205,19 @@ class TypinGPT:
             res.append("".join(token_list))
             candidates_list.append(tuple(token_list))
 
-        if pinyin.startswith(self.last_pinyin):
-            combo = True
-
         output_ids = torch.cat(
             (full_context_ids.expand(target_ids.size(0), -1), target_ids),
             dim=1,
         )
 
-        candidates_list = [background + item for item in candidates_list]
+        if len(background) > 1:
+            candidates_list = [
+                _b + item for _b, item in zip(background, candidates_list)
+            ]
+
+        key = context_query + tuple(constraint_pinyin_list)
         self.last = GenerationOutput(
+            key=key,
             candidates_list=tuple(candidates_list),
             input_ids=output_ids,
             pkv=last_key_values,
@@ -182,17 +225,42 @@ class TypinGPT:
         )
         self.last_pinyin = pinyin
         self.history.append(self.last)
-        # if context == "你好": # test debug
-        #     breakpoint()
-        return res
 
-    def search_history(self, context, pinyin=None):
+        # if pinyin == "mapengyou":  # test debug
+        #     breakpoint()
+
+        pin_context_length = len(pinyin_query)
+        if pin_context_length > 0:
+            res = [
+                "".join(background[i][-pin_context_length:]) + res[i]
+                for i in range(len(res))
+            ]
+
+        return res[: self.num_return_candidates]
+
+    def create_query(
+        self, context: str, partial_context: Optional[str] = None
+    ):
+        """
+        create the query for search_history, there are two parts:
+
+        1. context_query: the non pinyin context
+        2. partial_context_query: the pinyin context
+        """
         context_tokens = self.tokenizer.tokenize(context)
-        context_key = tuple(context_tokens)
+        context_query = tuple(context_tokens)
+        partial_context_query = (
+            tuple(self.split(partial_context))
+            if partial_context is not None
+            else tuple()
+        )
+        return context_query, partial_context_query
+
+    def search_history(self, context_query, pinyin=None):
         for i in range(len(self.history)):
             candidates, input_ids, pkv, beam_history = self.history[
                 i
-            ].match_context(context_key)
+            ].match_context(context_query)
             if pkv is not None:
                 return candidates, input_ids, pkv, beam_history
         return tuple(), None, None, None

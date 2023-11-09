@@ -416,6 +416,7 @@ def new_prepare_inputs_for_generation(
     token_type_ids = kwargs.get("token_type_ids", None)
     # only last token for inputs_ids if past is defined in kwargs
     if past_key_values:
+        # if this is a first round with past_key_values not none, don't touch input_ids
         if loop_step != 0:
             input_ids = input_ids[:, -1].unsqueeze(-1)
             if token_type_ids is not None:
@@ -453,6 +454,44 @@ def new_prepare_inputs_for_generation(
         }
     )
     return model_inputs
+
+
+@staticmethod
+def _expand_inputs_for_generation(
+    expand_size: int = 1,
+    is_encoder_decoder: bool = False,
+    input_ids: Optional[torch.LongTensor] = None,
+    **model_kwargs,
+) -> Tuple[torch.LongTensor, Dict[str, Any]]:
+    """Expands tensors from [batch_size, ...] to [batch_size * expand_size, ...]"""
+
+    def _expand_dict_for_generation(dict_to_expand):
+        for key in dict_to_expand:
+            if (
+                dict_to_expand[key] is not None
+                and isinstance(dict_to_expand[key], torch.Tensor)
+                and dict_to_expand[key].size(0) != expand_size
+            ):
+                dict_to_expand[key] = dict_to_expand[key].repeat_interleave(
+                    expand_size, dim=0
+                )
+        return dict_to_expand
+
+    if input_ids is not None and input_ids.size(0) != expand_size:
+        input_ids = input_ids.repeat_interleave(expand_size, dim=0)
+
+    model_kwargs = _expand_dict_for_generation(model_kwargs)
+
+    if is_encoder_decoder:
+        if model_kwargs.get("encoder_outputs") is None:
+            raise ValueError(
+                "If `is_encoder_decoder` is True, make sure that `encoder_outputs` is defined."
+            )
+        model_kwargs["encoder_outputs"] = _expand_dict_for_generation(
+            model_kwargs["encoder_outputs"]
+        )
+
+    return input_ids, model_kwargs
 
 
 @torch.no_grad()
@@ -602,7 +641,8 @@ def generate(
     inputs_tensor, model_input_name, model_kwargs = self._prepare_model_inputs(
         inputs, generation_config.bos_token_id, model_kwargs
     )
-    batch_size = inputs_tensor.shape[0]
+    # batch_size = inputs_tensor.shape[0]
+    batch_size = 1  # fix batch size to one
 
     # 4. Define other model kwargs
     model_kwargs["output_attentions"] = generation_config.output_attentions
@@ -775,16 +815,16 @@ def generate(
             )
 
         # 11. prepare beam search scorer
-        if beam_scorer is None:
-            beam_scorer = BeamSearchScorer(
-                batch_size=batch_size,
-                num_beams=generation_config.num_beams,
-                device=inputs_tensor.device,
-                length_penalty=generation_config.length_penalty,
-                do_early_stopping=generation_config.early_stopping,
-                num_beam_hyps_to_keep=generation_config.num_return_sequences,
-                max_length=generation_config.max_length,
-            )
+
+        beam_scorer = BeamSearchScorer(
+            batch_size=batch_size,
+            num_beams=generation_config.num_beams,
+            device=inputs_tensor.device,
+            length_penalty=generation_config.length_penalty,
+            do_early_stopping=generation_config.early_stopping,
+            num_beam_hyps_to_keep=generation_config.num_return_sequences,
+            max_length=generation_config.max_length,
+        )
         # 12. interleave input_ids with `num_beams` additional sequences per batch
         input_ids, model_kwargs = self._expand_inputs_for_generation(
             input_ids=input_ids,
