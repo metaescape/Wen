@@ -6,6 +6,10 @@ engine = TypinGPT(
 )
 
 
+def test_pinyin_split():
+    res = engine.split("nihao")
+
+
 def test_cls_past_key_values():
     engine.init_cls_kv()
     assert len(engine.cls_kv) == 12
@@ -58,3 +62,9 @@ def test_generate_on_context():
 def test_generate_on_partial_context():
     res = engine.generate("你好", "mapengyou")
     assert res[0] == "吗朋友"
+
+
+def test_generate_on_fail_search():
+    res = engine.generate("知道", "wozoule")
+    assert res[0] == "我走了"
+    assert len(engine.history) == 4

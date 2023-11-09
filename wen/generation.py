@@ -112,6 +112,7 @@ def beam_search(
     self,
     input_ids: torch.LongTensor,
     beam_scorer: BeamScorer,
+    beam_scores: torch.Tensor,
     logits_processor: Optional[LogitsProcessorList] = None,
     stopping_criteria: Optional[StoppingCriteriaList] = None,
     max_length: Optional[int] = None,
@@ -286,11 +287,11 @@ def beam_search(
 
     # initialise score of first beam with 0 and the rest with -1e9. This makes sure that only tokens
     # of the first beam are considered to avoid sampling the exact same tokens across all beams.
-    beam_scores = torch.zeros(
-        (batch_size, num_beams), dtype=torch.float, device=input_ids.device
-    )
-    beam_scores[:, 1:] = -1e9
-    beam_scores = beam_scores.view((batch_size * num_beams,))
+    # beam_scores = torch.zeros(
+    #     (batch_size, num_beams), dtype=torch.float, device=input_ids.device
+    # )
+    # beam_scores[:, 1:] = -1e9
+    # beam_scores = beam_scores.view((batch_size * num_beams,))
 
     if model_kwargs["past_key_values"] is not None:
         if model_kwargs["past_key_values"][0][0].size(0) == 1:
@@ -498,6 +499,7 @@ def _expand_inputs_for_generation(
 def generate(
     self,
     inputs: Optional[torch.Tensor] = None,
+    beam_scores: Optional[torch.Tensor] = None,
     generation_config: Optional[GenerationConfig] = None,
     logits_processor: Optional[LogitsProcessorList] = None,
     stopping_criteria: Optional[StoppingCriteriaList] = None,
@@ -836,6 +838,7 @@ def generate(
         return self.beam_search(
             input_ids,
             beam_scorer,
+            beam_scores,
             logits_processor=logits_processor,
             stopping_criteria=stopping_criteria,
             pad_token_id=generation_config.pad_token_id,

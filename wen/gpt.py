@@ -57,11 +57,11 @@ class GenerationOutput(ModelOutput):
                 self.candidates_list,
                 self.input_ids,
                 self.pkv,
-                self.beam_scores_list,
+                self.beam_scores_list[-1],
             )
 
-        candidates, input_ids, pkv, beam_history = None, None, None, None
         num_beams = self.input_ids.size(0)
+        candidates, input_ids, pkv, beam_scores = None, None, None, None
 
         for i, candidates in enumerate(self.candidates_list):
             if candidates == context:
@@ -83,10 +83,9 @@ class GenerationOutput(ModelOutput):
                 input_ids = self.input_ids[i : i + 1, :].repeat_interleave(
                     num_beams, 0
                 )
-                beam_history = None
                 break
 
-        return candidates, input_ids, pkv, beam_history
+        return candidates, input_ids, pkv, beam_scores
 
 
 class TypinGPT:
@@ -97,22 +96,24 @@ class TypinGPT:
     ) -> None:
         self.model = self.init_model(model_name_or_path)
 
-        self.context_length = 10
+        self.max_context_length = 10
         self.num_return_candidates = 9
         self.num_beams = 10
         self.max_history_length = 30
 
+        self.init_beam_scores()
+
         self.tokenizer = BertTokenizer.from_pretrained(model_name_or_path)
         self.processors = LogitsProcessorList()
-        self.pinyin_dict = get_pinyin_to_char(self.tokenizer, pinyin_json)
+        self.code_map = get_pinyin_to_char(self.tokenizer, pinyin_json)
         self.processors.append(
-            PinyinGPTCompatibleLogitsProcessor(self.pinyin_dict)
+            PinyinGPTCompatibleLogitsProcessor(self.code_map)
         )
         self.pys = PinyinSplit()
 
         self.last = GenerationOutput()
         self.history = deque(maxlen=self.max_history_length)
-        self.last_pinyin = ""
+        self.last_code_tokens = tuple()
         self.cls_kv = []
         self.init_cls_kv()
 
@@ -127,14 +128,14 @@ class TypinGPT:
         GPT2LMHeadModel._expand_inputs_for_generation = (
             _expand_inputs_for_generation
         )
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = GPT2LMHeadModel.from_pretrained(model_name_or_path).to(device)
+        self.device = torch.device(
+            "cuda" if torch.cuda.is_available() else "cpu"
+        )
+        model = GPT2LMHeadModel.from_pretrained(model_name_or_path).to(
+            self.device
+        )
         model.eval()
         return model
-
-    def split(self, pinyin: str):
-        pinyin_list = self.pys.split(pinyin)
-        return pinyin_list[0] if pinyin_list else []
 
     def prepare_context_ids(self, context) -> torch.Tensor:
         start = 0 if context == "" else 1
@@ -152,21 +153,25 @@ class TypinGPT:
         cls_ids = self.prepare_context_ids("")
         self.cls_kv = self.model(cls_ids).past_key_values
 
-    def generate(self, context, pinyin: Union[str, list], logger=None) -> list:
-        context = context[-self.context_length :]
+    def init_beam_scores(self):
+        beam_scores = torch.zeros(
+            (1, self.num_beams),
+            dtype=torch.float,
+            device=self.device,
+        )
+        beam_scores[:, 1:] = -1e9
+        self.beam_scores = beam_scores.view((self.num_beams,))
 
-        pin_context = ""
-        current_pinyin = pinyin
-        if pinyin.startswith(self.last_pinyin):
-            combo = True
-            # get the suffix
-            current_pinyin = pinyin[len(self.last_pinyin) :]
-            pin_context = pinyin[: len(self.last_pinyin)]
+    def generate(
+        self, context_string: str, code_string: str, logger=None
+    ) -> list:
+        context = context_string[-self.max_context_length :]
+        code_query, current_code_tokens = self.separate_pinyin(code_string)
 
-        context_query, pinyin_query = self.create_query(context, pin_context)
-        query = context_query + pinyin_query
+        context_query, _ = self.create_query(context, None)
+        query = context_query + code_query
 
-        background, full_context_ids, pkv, beam_history = self.search_history(
+        background, full_context_ids, pkv, beam_scores = self.search_history(
             query
         )
 
@@ -176,23 +181,30 @@ class TypinGPT:
         else:
             context_ids = full_context_ids[:, -1:]
 
-        constraint_pinyin_list = self.split(current_pinyin)
-        if constraint_pinyin_list == []:
-            return []
+        pin_context_length = len(code_query)
+
+        if current_code_tokens == tuple():
+            return [  # 重新输入的情况，比如选错了词，删除后重新输入
+                "".join(background[i][-pin_context_length:])
+                for i in range(len(background))
+            ]
 
         context_len = context_ids.size(1)
-        max_length = context_len + len(constraint_pinyin_list)
+        max_length = context_len + len(current_code_tokens)
 
-        if logger:
-            logger.debug(background)
+        if logger and context_query:
+            logger.debug(context_query)
 
         output_ids, last_key_values, beam_history = self.model.generate(
             input_ids=context_ids,
+            beam_scores=beam_scores
+            if beam_scores is not None
+            else self.beam_scores,
             num_beams=self.num_beams,
             num_return_sequences=self.num_beams,
             logits_processor=self.processors,
             max_length=max_length,
-            constraint_pinyin_list=constraint_pinyin_list,
+            constraint_pinyin_list=current_code_tokens,
             past_key_values=pkv,
         )
 
@@ -215,7 +227,7 @@ class TypinGPT:
                 _b + item for _b, item in zip(background, candidates_list)
             ]
 
-        key = context_query + tuple(constraint_pinyin_list)
+        key = context_query + tuple(current_code_tokens)
         self.last = GenerationOutput(
             key=key,
             candidates_list=tuple(candidates_list),
@@ -223,13 +235,12 @@ class TypinGPT:
             pkv=last_key_values,
             beam_scores_list=beam_history,
         )
-        self.last_pinyin = pinyin
+        self.last_code_tokens = code_query + current_code_tokens
         self.history.append(self.last)
 
         # if pinyin == "mapengyou":  # test debug
         #     breakpoint()
 
-        pin_context_length = len(pinyin_query)
         if pin_context_length > 0:
             res = [
                 "".join(background[i][-pin_context_length:]) + res[i]
@@ -237,6 +248,26 @@ class TypinGPT:
             ]
 
         return res[: self.num_return_candidates]
+
+    def prepare_for_generation(self, context_string: str, code_string: str):
+        pass
+
+    def split(self, code_string: str):
+        code_tokens = self.pys.split(code_string)
+        return code_tokens[0] if code_tokens else []
+
+    def separate_pinyin(self, pinyin: str):
+        pinyin_list = self.split(pinyin)
+
+        # if last_pinyin_list is the prefix of pinyin_list, then it is a combo
+        if pinyin_list[: len(self.last_code_tokens)] == self.last_code_tokens:
+            current_pinyin = pinyin_list[len(self.last_code_tokens) :]
+            pinyin_query = pinyin_list[: len(self.last_code_tokens)]
+        else:
+            current_pinyin = pinyin_list
+            pinyin_query = tuple()
+
+        return pinyin_query, tuple(current_pinyin)
 
     def create_query(
         self, context: str, partial_context: Optional[str] = None
@@ -258,9 +289,10 @@ class TypinGPT:
 
     def search_history(self, context_query, pinyin=None):
         for i in range(len(self.history)):
-            candidates, input_ids, pkv, beam_history = self.history[
+            candidates, input_ids, pkv, beam_scores = self.history[
                 i
             ].match_context(context_query)
             if pkv is not None:
-                return candidates, input_ids, pkv, beam_history
+                return candidates, input_ids, pkv, beam_scores
+
         return tuple(), None, None, None
