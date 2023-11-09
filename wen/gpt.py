@@ -166,7 +166,9 @@ class TypinGPT:
         self, context_string: str, code_string: str, logger=None
     ) -> list:
         context = context_string[-self.max_context_length :]
-        code_query, current_code_tokens = self.separate_pinyin(code_string)
+        code_query, current_code_tokens = self.separate_code_string(
+            code_string
+        )
 
         context_query, _ = self.create_query(context, None)
         query = context_query + code_query
@@ -183,6 +185,11 @@ class TypinGPT:
 
         pin_context_length = len(code_query)
 
+        if logger and context_query:
+            logger.debug(
+                f"{context_query}, {code_query}, {self.last_code_tokens}, {current_code_tokens}"
+            )
+
         if current_code_tokens == tuple():
             return [  # 重新输入的情况，比如选错了词，删除后重新输入
                 "".join(background[i][-pin_context_length:])
@@ -191,9 +198,6 @@ class TypinGPT:
 
         context_len = context_ids.size(1)
         max_length = context_len + len(current_code_tokens)
-
-        if logger and context_query:
-            logger.debug(context_query)
 
         output_ids, last_key_values, beam_history = self.model.generate(
             input_ids=context_ids,
@@ -256,18 +260,21 @@ class TypinGPT:
         code_tokens = self.pys.split(code_string)
         return code_tokens[0] if code_tokens else []
 
-    def separate_pinyin(self, pinyin: str):
-        pinyin_list = self.split(pinyin)
+    def separate_code_string(self, code_string: str):
+        code_tokens = self.split(code_string)
 
-        # if last_pinyin_list is the prefix of pinyin_list, then it is a combo
-        if pinyin_list[: len(self.last_code_tokens)] == self.last_code_tokens:
-            current_pinyin = pinyin_list[len(self.last_code_tokens) :]
-            pinyin_query = pinyin_list[: len(self.last_code_tokens)]
+        # if last_code_tokens is the prefix of code_tokens, then separate them
+        if (
+            tuple(code_tokens[: len(self.last_code_tokens)])
+            == self.last_code_tokens
+        ):
+            current_code_tokens = code_tokens[len(self.last_code_tokens) :]
+            code_query = code_tokens[: len(self.last_code_tokens)]
         else:
-            current_pinyin = pinyin_list
-            pinyin_query = tuple()
+            current_code_tokens = code_tokens
+            code_query = tuple()
 
-        return pinyin_query, tuple(current_pinyin)
+        return tuple(code_query), tuple(current_code_tokens)
 
     def create_query(
         self, context: str, partial_context: Optional[str] = None
@@ -287,7 +294,7 @@ class TypinGPT:
         )
         return context_query, partial_context_query
 
-    def search_history(self, context_query, pinyin=None):
+    def search_history(self, context_query, code_string=None):
         for i in range(len(self.history)):
             candidates, input_ids, pkv, beam_scores = self.history[
                 i

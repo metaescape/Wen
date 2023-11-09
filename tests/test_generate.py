@@ -68,3 +68,5 @@ def test_generate_on_fail_search():
     res = engine.generate("知道", "wozoule")
     assert res[0] == "我走了"
     assert len(engine.history) == 4
+    res = engine.generate("我想认真", "henitaolunzhegewenti")
+    assert res[0] == "和你讨论这个问题"
