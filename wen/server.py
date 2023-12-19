@@ -7,6 +7,7 @@ import re
 import sys
 from typing import Any, List, Optional, Union
 import cattrs
+import time
 
 from lsprotocol.types import (
     INITIALIZE,
@@ -35,7 +36,7 @@ from pygls.server import LanguageServer
 __version__ = "0.0.1"
 
 from wen.configuration import WenConfig
-from wen.gpt import TypinGPT
+from wen.gpt import TypinGPT, IME
 from wen.latex import in_latex_env
 
 CFG = WenConfig()
@@ -58,6 +59,7 @@ def debug_logger():
 
 
 logger = debug_logger()
+logger.debug("start logging")
 
 if CFG.use_pinyin_initial:
     import jieba
@@ -78,7 +80,8 @@ if CFG.completion == "demo":
     godtian = gp.GodTian_Pinyin()
 
 elif CFG.completion == "gpt2":
-    typinG = TypinGPT(model_name_or_path=CFG.model_path)
+    # typinG = TypinGPT(model_name_or_path=CFG.model_path)
+    typinG = IME(model_name_or_path=CFG.model_path)
 
 words = set(["中文语言服务", "wenls", "Metaescape"])
 
@@ -245,9 +248,9 @@ async def completions(params: CompletionParams):
     pos = params.position
     doc = wenls.workspace.get_document(params.text_document.uri)
 
-    context = doc.word_at_position(pos, re.compile(".*"))
+    line_context = doc.word_at_position(pos, re.compile(".*"))
     cur_word = doc.word_at_position(pos, RE_START_WORD)
-    context = context[: -len(cur_word)]
+    line_context = line_context[: -len(cur_word)]
     if CFG.debug:
         logger.debug("cur_word: %s", cur_word)
 
@@ -281,20 +284,25 @@ async def completions(params: CompletionParams):
         loop = asyncio.get_event_loop()
         loop.create_task(
             generate_and_update_completions(
-                context, cur_word, completion_list, pos
+                line_context, cur_word, completion_list, pos
             )
         )
+    
 
     return completion_list
 
-
+import random
 async def generate_and_update_completions(
     context, cur_word, completion_list, pos
 ):
     try:
         # 在后台执行 typinG.generate 函数
-        logger.debug("context: %s", context)
+        # logger.debug("context: %s", context)
         cands = typinG.generate(context, cur_word, logger)
+        # cands = [random.choice(["test", "test2", "test3", "test4"])]
+        # await asyncio.sleep(0.2)
+        # time.sleep(0.4)
+        logger.debug(cands[0])
         # 更新补全列表
         completion_list.items.clear()
         completion_list.items.extend(
@@ -307,7 +315,8 @@ async def generate_and_update_completions(
 @wenls.feature(TEXT_DOCUMENT_DID_SAVE)
 def did_change(ls, params: DidSaveTextDocumentParams):
     """Text document did change notification."""
-    _update_words(ls, params)
+    # _update_words(ls, params)
+    pass
 
 
 @wenls.feature(TEXT_DOCUMENT_DID_OPEN)
