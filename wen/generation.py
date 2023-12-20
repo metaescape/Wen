@@ -445,7 +445,7 @@ def new_prepare_inputs_for_generation(
         model_inputs = {"inputs_embeds": inputs_embeds}
     else:
         model_inputs = {"input_ids": input_ids}
-    attention_mask = None
+    # attention_mask = None
     model_inputs.update(
         {
             "past_key_values": past_key_values,
@@ -623,17 +623,17 @@ def generate(
         generation_config.pad_token_id is None
         and generation_config.eos_token_id is not None
     ):
-        if model_kwargs.get("attention_mask", None) is None:
-            logging.warning(
-                "The attention mask and the pad token id were not set. As a consequence, you may observe "
-                "unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results."
-            )
+        # if model_kwargs.get("attention_mask", None) is None:
+        #     logging.warning(
+        #         "The attention mask and the pad token id were not set. As a consequence, you may observe "
+        #         "unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results."
+        #     )
         eos_token_id = generation_config.eos_token_id
         if isinstance(eos_token_id, list):
             eos_token_id = eos_token_id[0]
-        logging.warning(
-            f"Setting `pad_token_id` to `eos_token_id`:{eos_token_id} for open-end generation."
-        )
+        # logging.warning(
+        #     f"Setting `pad_token_id` to `eos_token_id`:{eos_token_id} for open-end generation."
+        # )
         generation_config.pad_token_id = eos_token_id
 
     # 3. Define model inputs

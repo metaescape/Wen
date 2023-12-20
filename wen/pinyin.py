@@ -156,3 +156,24 @@ class PinYinTokenizer:
 
 def all_chinese_chars(sentence):
     return RE_HANS.match(sentence) is not None
+
+
+def is_chinese_char(char):
+    """ 判断是否为中文字符且排除中文标点 """
+    if '\u4e00' <= char <= '\u9fff':
+        return True
+    if '\u3400' <= char <= '\u4dbf':
+        return True
+    if '\u20000' <= char <= '\u2a6df':
+        return True
+    if '\u2a700' <= char <= '\u2b73f':
+        return True
+    if '\u2b740' <= char <= '\u2b81f':
+        return True
+    if '\u2b820' <= char <= '\u2ceaf':
+        return True
+    if '\u2ceb0' <= char <= '\u2ebef':
+        return True
+    if '\u30000' <= char <= '\u3134f':
+        return True
+    return False
